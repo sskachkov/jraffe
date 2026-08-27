@@ -1,0 +1,17 @@
+<configuration>
+    <!-- File only, never console: Maelstrom treats every stdout line as a protocol message,
+         so any log line on stdout (or stderr, which some tooling also captures) risks
+         breaking parsing. Maelstrom gives each node process its own working directory, so a
+         plain relative path here naturally lands in a separate file per node. -->
+    <appender name="FILE" class="ch.qos.logback.core.FileAppender">
+        <file>maelstrom-server.log</file>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="io.github.sskachkov.jraffe" level="DEBUG"/>
+    <root level="INFO">
+        <appender-ref ref="FILE"/>
+    </root>
+</configuration>

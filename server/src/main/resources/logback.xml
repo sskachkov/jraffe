@@ -1,0 +1,14 @@
+<configuration>
+    <property name="nodeId" value="${NODE_ID:-}" />
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level [${nodeId}] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="io.github.sskachkov.jraffe" level="DEBUG"/>
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>

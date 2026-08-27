@@ -1,0 +1,14 @@
+# Build output
+target/
+dependency-reduced-pom.xml
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+
+# Local run artifacts
+logs/
+*.log
