@@ -1,22 +1,15 @@
 package io.github.sskachkov.jraffe.server.protocol;
 
-import io.github.sskachkov.jraffe.core.RaftNode;
-import io.github.sskachkov.jraffe.core.ReplicationState;
-import io.github.sskachkov.jraffe.core.Role;
 import io.github.sskachkov.jraffe.core.error.NotLeaderError;
 import io.github.sskachkov.jraffe.core.error.RaftError;
 import io.github.sskachkov.jraffe.core.error.TimeoutError;
 import io.github.sskachkov.jraffe.core.logging.ContextAwareLogger;
 import io.github.sskachkov.jraffe.core.message.RaftMessage;
 import io.github.sskachkov.jraffe.core.message.RaftResponse;
-import io.github.sskachkov.jraffe.kvstore.CVASCommandCodec;
-import io.github.sskachkov.jraffe.kvstore.CVASRequest;
-import io.github.sskachkov.jraffe.kvstore.CVASResponse;
-import io.github.sskachkov.jraffe.kvstore.GetCommandCodec;
-import io.github.sskachkov.jraffe.kvstore.GetRequest;
-import io.github.sskachkov.jraffe.kvstore.GetResponse;
-import io.github.sskachkov.jraffe.kvstore.SetCommandCodec;
-import io.github.sskachkov.jraffe.kvstore.SetRequest;
+import io.github.sskachkov.jraffe.core.node.PeerReplicationStatus;
+import io.github.sskachkov.jraffe.core.node.RaftNode;
+import io.github.sskachkov.jraffe.core.node.Role;
+import io.github.sskachkov.jraffe.kvstore.*;
 import io.github.sskachkov.jraffe.server.metrics.MetricsFormatter;
 import io.github.sskachkov.jraffe.wire.resp.RespReader;
 import io.github.sskachkov.jraffe.wire.resp.RespValue;
@@ -28,13 +21,8 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
 public class ClientProtocolServer {
-    private static final String WHITESPACE = "    ";
-    private static final long SUBMIT_TIMEOUT_SECONDS = 5;
 
     private final Logger log;
     private final RaftNode raftNode;
@@ -95,7 +83,7 @@ public class ClientProtocolServer {
         }
     }
 
-    private CommandResult handleCommand(RespValue.RespArray request) {
+    CommandResult handleCommand(RespValue.RespArray request) {
         if (request.values().isEmpty()) {
             return CommandResult.of(new RespValue.RespError("ERR invalid command"));
         }
@@ -117,21 +105,18 @@ public class ClientProtocolServer {
     private RespValue handleStatus() {
         StringBuilder status = new StringBuilder();
         status.append("role=").append(raftNode.getRole()).append(" term=").append(raftNode.getCurrentTerm()).
-                append(" nodeId=").append(raftNode.getNodeId());
+                append(" nodeId=").append(raftNode.getId());
         if (raftNode.getRole() == Role.LEADER) {
-            ReplicationState tracker = raftNode.getReplicationState();
-            if (tracker != null) { //extra check for rare race condition
+            raftNode.getReplicationStatus().ifPresent(statuses -> { //empty on the rare race where leadership just changed
                 status.append(" commitIndex=").append(raftNode.getCommitIndex());
-                List<String> peerIds = raftNode.getPeerIds();
-                for (String peerId : peerIds) {
-                    ReplicationState.PeerProgress progress = tracker.getPeerProgress(peerId);
+                for (String peerId : raftNode.getPeerIds()) {
+                    PeerReplicationStatus progress = statuses.get(peerId);
                     status.append("\n").append(peerId).append(":").append("matchIndex=").append(progress.matchIndex())
                             .append(" nextIndex=").append(progress.nextIndex());
                     long currentTime = System.nanoTime();
                     status.append(" lastConfirmedDispatchMs=").append((currentTime - progress.lastConfirmedDispatchAt()) / 1000000);
-
                 }
-            }
+            });
         }
         return new RespValue.BulkString(status.toString().getBytes(StandardCharsets.UTF_8));
     }
@@ -143,19 +128,11 @@ public class ClientProtocolServer {
             return new RespValue.RespError("ERR wrong number of arguments for 'SET'");
         }
         byte[] command = SetCommandCodec.encodeRequest(new SetRequest(keyValue.value(), valueValue.value()));
-        try {
-            RaftResponse rr = raftNode.submit(new RaftMessage(command)).orTimeout(SUBMIT_TIMEOUT_SECONDS, TimeUnit.SECONDS).get();
-            if (rr.isSuccess()) {
-                return new RespValue.SimpleString("OK");
-            } else {
-                return convertRaftError(rr.getError());
-            }
-        } catch (ExecutionException e) {
-            log.error("Unexpected failure while submitting SET", e.getCause());
-            return new RespValue.RespError("ERR internal error");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return new RespValue.RespError("ERR interrupted");
+        RaftResponse rr = raftNode.submitSync(new RaftMessage(command));
+        if (rr.isSuccess()) {
+            return new RespValue.SimpleString("OK");
+        } else {
+            return convertRaftError(rr.getError());
         }
     }
 
@@ -164,20 +141,12 @@ public class ClientProtocolServer {
             return new RespValue.RespError("ERR wrong number of arguments for 'GET'");
         }
         byte[] command = GetCommandCodec.encodeRequest(new GetRequest(keyValue.value()));
-        try {
-            RaftResponse rr = raftNode.submitReadonly(new RaftMessage(command)).orTimeout(SUBMIT_TIMEOUT_SECONDS, TimeUnit.SECONDS).get();
-            if (rr.isSuccess()) {
-                GetResponse response = GetCommandCodec.decodeResponse(rr.getData());
-                return response.found() ? new RespValue.BulkString(response.value()) : new RespValue.Nil();
-            } else {
-                return convertRaftError(rr.getError());
-            }
-        } catch (ExecutionException e) {
-            log.error("Unexpected failure while submitting SET", e.getCause());
-            return new RespValue.RespError("ERR internal error");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return new RespValue.RespError("ERR interrupted");
+        RaftResponse rr = raftNode.submitReadonlySync(new RaftMessage(command));
+        if (rr.isSuccess()) {
+            GetResponse response = GetCommandCodec.decodeResponse(rr.getData());
+            return response.found() ? new RespValue.BulkString(response.value()) : new RespValue.Nil();
+        } else {
+            return convertRaftError(rr.getError());
         }
     }
 
@@ -189,25 +158,17 @@ public class ClientProtocolServer {
             return new RespValue.RespError("ERR wrong number of arguments for 'CVAS'");
         }
         byte[] command = CVASCommandCodec.encodeRequest(new CVASRequest(keyValue.value(), fromValue.value(), toValue.value()));
-        try {
-            RaftResponse rr = raftNode.submit(new RaftMessage(command)).orTimeout(SUBMIT_TIMEOUT_SECONDS, TimeUnit.SECONDS).get();
-            if (!rr.isSuccess()) {
-                return convertRaftError(rr.getError());
-            }
-            CVASResponse response = CVASCommandCodec.decodeResponse(rr.getData());
-            return switch (response.status()) {
-                case SUCCESS -> new RespValue.SimpleString("OK");
-                case KEY_NOT_FOUND -> new RespValue.RespError("ERR key does not exist");
-                case VALUE_MISMATCH -> new RespValue.RespError("ERR value mismatch, actual value: "
-                        + new String(response.actualValue(), StandardCharsets.UTF_8));
-            };
-        } catch (ExecutionException e) {
-            log.error("Unexpected failure while submitting CVAS", e.getCause());
-            return new RespValue.RespError("ERR internal error");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return new RespValue.RespError("ERR interrupted");
+        RaftResponse rr = raftNode.submitSync(new RaftMessage(command));
+        if (!rr.isSuccess()) {
+            return convertRaftError(rr.getError());
         }
+        CVASResponse response = CVASCommandCodec.decodeResponse(rr.getData());
+        return switch (response.status()) {
+            case SUCCESS -> new RespValue.SimpleString("OK");
+            case KEY_NOT_FOUND -> new RespValue.RespError("ERR key does not exist");
+            case VALUE_MISMATCH -> new RespValue.RespError("ERR value mismatch, actual value: "
+                    + new String(response.actualValue(), StandardCharsets.UTF_8));
+        };
     }
 
     private RespValue handleStats() {
@@ -220,7 +181,7 @@ public class ClientProtocolServer {
         serverSocket.close();
     }
 
-    private record CommandResult(RespValue reply, boolean close) {
+    record CommandResult(RespValue reply, boolean close) {
         static CommandResult of(RespValue reply) {
             return new CommandResult(reply, false);
         }

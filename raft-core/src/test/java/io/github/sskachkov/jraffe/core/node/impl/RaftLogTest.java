@@ -1,4 +1,4 @@
-package io.github.sskachkov.jraffe.core;
+package io.github.sskachkov.jraffe.core.node.impl;
 
 import io.github.sskachkov.jraffe.core.rpc.LogEntry;
 import org.junit.jupiter.api.Test;
@@ -16,51 +16,51 @@ class RaftLogTest {
 
     @Test
     void higherTermWinsEvenWithFewerEntries() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         log.appendNew(3, "x".getBytes(), false); // voter: index 1, term 3
-        assertTrue(log.isCandidateUpToDate(0, 4)); // candidate: behind on index, ahead on term
+        assertTrue(log.candidateUpToDate(0, 4)); // candidate: behind on index, ahead on term
     }
 
     @Test
     void lowerTermLosesEvenWithMoreEntries() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         log.appendNew(5, "x".getBytes(), false); // voter: index 1, term 5
-        assertFalse(log.isCandidateUpToDate(100, 2)); // candidate: way ahead on index, behind on term
+        assertFalse(log.candidateUpToDate(100, 2)); // candidate: way ahead on index, behind on term
     }
 
     @Test
     void sameTermCandidateAheadOnIndexWins() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         log.appendNew(3, "x".getBytes(), false); // voter: index 1, term 3
-        assertTrue(log.isCandidateUpToDate(5, 3));
+        assertTrue(log.candidateUpToDate(5, 3));
     }
 
     @Test
     void sameTermCandidateBehindOnIndexLoses() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         log.appendNew(3, "x".getBytes(), false);
         log.appendNew(3, "y".getBytes(), false); // voter: index 2, term 3
-        assertFalse(log.isCandidateUpToDate(1, 3));
+        assertFalse(log.candidateUpToDate(1, 3));
     }
 
     @Test
     void exactTieCounts() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         log.appendNew(3, "x".getBytes(), false); // voter: index 1, term 3
-        assertTrue(log.isCandidateUpToDate(1, 3)); // identical logs count as "at least as up to date"
+        assertTrue(log.candidateUpToDate(1, 3)); // identical logs count as "at least as up to date"
     }
 
     @Test
     void emptyLogsAreEquallyUpToDate() {
-        RaftLog log = new RaftLog();
-        assertTrue(log.isCandidateUpToDate(0, 0));
+        RaftLog log = new RaftLog("n1");
+        assertTrue(log.candidateUpToDate(0, 0));
     }
 
     // -- tryAppend (§5.3): consistency check, idempotent retries, conflict truncation --
 
     @Test
     void rejectsWhenPrevLogIndexBeyondEnd() {
-        RaftLog log = new RaftLog(); // lastIndex() == 0
+        RaftLog log = new RaftLog("n1"); // lastIndex() == 0
         boolean accepted = log.tryAppend(5, 1, List.of(new LogEntry(6, 1, "x".getBytes(), false)));
         assertFalse(accepted);
         assertEquals(0, log.lastIndex()); // untouched
@@ -68,7 +68,7 @@ class RaftLogTest {
 
     @Test
     void rejectsWhenPrevLogTermMismatches() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         log.appendNew(3, "a".getBytes(), false); // index 1, term 3
         boolean accepted = log.tryAppend(1, 99, List.of(new LogEntry(2, 3, "b".getBytes(), false)));
         assertFalse(accepted);
@@ -77,14 +77,14 @@ class RaftLogTest {
 
     @Test
     void rejectsWhenPrevLogIndexIsNegative() {
-        RaftLog log = new RaftLog();
-        boolean accepted = log.tryAppend(-1, 0, List.of(new LogEntry(0, 0, "x".getBytes(), false)));
+        RaftLog log = new RaftLog("n1");
+        boolean accepted = log.tryAppend(-1, 1, List.of(new LogEntry(0, 0, "x".getBytes(), false)));
         assertFalse(accepted);
     }
 
     @Test
     void appendsFreshEntriesPastTheEnd() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         boolean accepted = log.tryAppend(0, 0, List.of(
                 new LogEntry(1, 1, "a".getBytes(), false),
                 new LogEntry(2, 1, "b".getBytes(), false)));
@@ -97,8 +97,9 @@ class RaftLogTest {
 
     @Test
     void retryWithIdenticalEntriesIsIdempotent() {
-        RaftLog log = new RaftLog();
-        log.tryAppend(0, 0, List.of(new LogEntry(1, 1, "a".getBytes(), false), new LogEntry(2, 1, "b".getBytes(), false)));
+        RaftLog log = new RaftLog("n1");
+        boolean accepted = log.tryAppend(0, 0, List.of(new LogEntry(1, 1, "a".getBytes(), false), new LogEntry(2, 1, "b".getBytes(), false)));
+        assertTrue(accepted);
 
         boolean acceptedAgain = log.tryAppend(0, 0, List.of(
                 new LogEntry(1, 1, "a".getBytes(), false), new LogEntry(2, 1, "b".getBytes(), false)));
@@ -111,7 +112,7 @@ class RaftLogTest {
 
     @Test
     void conflictTruncatesExistingTailAndAppendsNew() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         log.tryAppend(0, 0, List.of(
                 new LogEntry(1, 1, "old1".getBytes(), false),
                 new LogEntry(2, 1, "old2".getBytes(), false),
@@ -130,7 +131,7 @@ class RaftLogTest {
 
     @Test
     void unmentionedTailBeyondBatchIsLeftUntouched() {
-        RaftLog log = new RaftLog();
+        RaftLog log = new RaftLog("n1");
         log.tryAppend(0, 0, List.of(
                 new LogEntry(1, 1, "a".getBytes(), false),
                 new LogEntry(2, 1, "b".getBytes(), false),
@@ -148,8 +149,10 @@ class RaftLogTest {
 
     @Test
     void emptyEntriesOnMatchingPrevLogIndexIsNoOp() {
-        RaftLog log = new RaftLog();
-        log.tryAppend(0, 0, List.of(new LogEntry(1, 1, "a".getBytes(), false), new LogEntry(2, 1, "b".getBytes(), false)));
+        RaftLog log = new RaftLog("n1");
+        log.tryAppend(0, 0, List.of(
+                new LogEntry(1, 1, "a".getBytes(), false),
+                new LogEntry(2, 1, "b".getBytes(), false)));
 
         boolean accepted = log.tryAppend(2, 1, List.of()); // heartbeat, prevLogIndex matches the log's end
 

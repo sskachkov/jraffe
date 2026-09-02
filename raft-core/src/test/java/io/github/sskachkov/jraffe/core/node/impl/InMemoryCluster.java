@@ -1,7 +1,7 @@
-package io.github.sskachkov.jraffe.core;
+package io.github.sskachkov.jraffe.core.node.impl;
 
-import io.github.sskachkov.jraffe.core.rpc.RaftRpcClient;
-import io.github.sskachkov.jraffe.core.rpc.RaftRpcException;
+import io.github.sskachkov.jraffe.core.node.RaftNode;
+import io.github.sskachkov.jraffe.core.rpc.*;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import java.util.ArrayList;
@@ -13,18 +13,18 @@ import java.util.function.Function;
 
 // routes RaftRpcClient calls directly between in-process RaftNode instances, no network involved.
 // a node marked "down" is unreachable in both directions, simulating a crashed process.
-class InMemoryCluster {
+public class InMemoryCluster {
     private final Map<String, RaftNode> nodes = new ConcurrentHashMap<>();
     private final Map<String, TestStateMachineAdapter> stateMachines = new ConcurrentHashMap<>();
     private final Set<String> down = ConcurrentHashMap.newKeySet();
 
-    List<RaftNode> start(List<String> nodeIds) {
+    public List<RaftNode> start(List<String> nodeIds) {
         List<RaftNode> nodes = new ArrayList<>();
         for (String id : nodeIds) {
             List<String> peers = nodeIds.stream().filter(other -> !other.equals(id)).toList();
             TestStateMachineAdapter stateMachine = new TestStateMachineAdapter();
             this.stateMachines.put(id, stateMachine);
-            RaftNode node = new RaftNode(id, peers, this.clientFor(id), stateMachine, new SimpleMeterRegistry());
+            RaftNode node = new RaftNodeImpl(id, peers, this.clientFor(id), stateMachine, new SimpleMeterRegistry());
             this.add(node);
             nodes.add(node);
         }
@@ -36,25 +36,25 @@ class InMemoryCluster {
         return this.stateMachines.get(nodeId);
     }
 
-    void add(RaftNode node) {
-        nodes.put(node.getNodeId(), node);
+    public void add(RaftNode node) {
+        nodes.put(node.getId(), node);
     }
 
     // marks a node unreachable in both directions while leaving it fully running -- simulates a
     // network partition, not a process crash. Reversible via heal().
-    void isolate(String nodeId) {
+    public void isolate(String nodeId) {
         down.add(nodeId);
     }
 
-    void heal(String nodeId) {
+    public void heal(String nodeId) {
         down.remove(nodeId);
     }
 
     // simulates the node's process actually dying: isolated AND its own executors stopped.
     // one-way, same as a real crash -- shutdown() cannot be un-done.
-    void crash(String nodeId) {
+    public void crash(String nodeId) {
         isolate(nodeId);
-        nodes.get(nodeId).shutdown();
+        nodes.get(nodeId).stop();
     }
 
     // simulates a crash followed by a process restart: the old RaftNode (and its background
@@ -64,10 +64,10 @@ class InMemoryCluster {
     RaftNode restart(String nodeId) {
         RaftNode old = nodes.get(nodeId);
         List<String> peers = old.getPeerIds();
-        old.shutdown();
+        old.stop();
         TestStateMachineAdapter stateMachine = new TestStateMachineAdapter();
         this.stateMachines.put(nodeId, stateMachine);
-        RaftNode fresh = new RaftNode(nodeId, peers, this.clientFor(nodeId), stateMachine, new SimpleMeterRegistry());
+        RaftNodeImpl fresh = new RaftNodeImpl(nodeId, peers, this.clientFor(nodeId), stateMachine, new SimpleMeterRegistry());
         this.add(fresh);
         fresh.start();
         return fresh;
@@ -75,20 +75,20 @@ class InMemoryCluster {
 
     // shuts down whatever is currently registered under each id -- unlike iterating a
     // test's own List<RaftNode>, this stays correct after restart() replaces an entry.
-    void shutdownAll() {
-        nodes.values().forEach(RaftNode::shutdown);
+    public void shutdownAll() {
+        nodes.values().forEach(RaftNode::stop);
     }
 
-    RaftRpcClient clientFor(String selfId) {
+    public RaftRpcClient clientFor(String selfId) {
         return new RaftRpcClient() {
             @Override
-            public RequestVoteResponse requestVote(String peerId, RequestVoteRequest request) throws RaftRpcException {
-                return dispatch(peerId, node -> node.handleRequestVote(request));
+            public RpcEnvelope<RequestVoteResponse> requestVote(RpcEnvelope<RequestVoteRequest> env) throws RaftRpcException {
+                return dispatch(env.recipient(), node -> node.handleRequestVote(env));
             }
 
             @Override
-            public AppendEntriesResponse appendEntries(String peerId, AppendEntriesRequest request) throws RaftRpcException {
-                return dispatch(peerId, node -> node.handleAppendEntries(request));
+            public RpcEnvelope<AppendEntriesResponse> appendEntries(RpcEnvelope<AppendEntriesRequest> env) throws RaftRpcException {
+                return dispatch(env.recipient(), node -> node.handleAppendEntries(env));
             }
 
             private <T> T dispatch(String peerId, Function<RaftNode, T> call) throws RaftRpcException {

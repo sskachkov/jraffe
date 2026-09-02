@@ -1,6 +1,8 @@
-package io.github.sskachkov.jraffe.core;
+package io.github.sskachkov.jraffe.core.node.impl;
 
-import io.github.sskachkov.jraffe.core.rpc.RaftRpcClient;
+import io.github.sskachkov.jraffe.core.node.RaftNode;
+import io.github.sskachkov.jraffe.core.rpc.EnvelopeFactory;
+import io.github.sskachkov.jraffe.core.rpc.RequestVoteRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
@@ -17,11 +19,13 @@ class RestartDoubleVoteTest {
     private static final List<String> NODE_IDS = List.of("n1", "n2", "n3");
     private InMemoryCluster cluster;
     private List<RaftNode> nodes;
+    private EnvelopeFactory envelopeFactory;
 
     @BeforeEach
     void setUp() {
         cluster = new InMemoryCluster();
         nodes = cluster.start(NODE_IDS);
+        envelopeFactory = new EnvelopeFactory();
     }
 
     @AfterEach
@@ -31,10 +35,9 @@ class RestartDoubleVoteTest {
 
     void restartedNodeMustNotGrantASecondVoteInATermItAlreadyVotedIn() {
         RaftNode n1 = nodes.get(0);
-
         // n1 grants candidate "b" its vote for term 5.
-        var reqFromB = new RaftRpcClient.RequestVoteRequest(5, "b", 0, 0);
-        var respToB = n1.handleRequestVote(reqFromB);
+        var reqFromB = envelopeFactory.create("b", "n1", new RequestVoteRequest(5,  0, 0));
+        var respToB = n1.handleRequestVote(reqFromB).payload();
         assertTrue(respToB.voteGranted(), "first vote request in term 5 should be granted");
 
         // n1 crashes and restarts. With no persistence, the replacement instance has no memory
@@ -42,8 +45,8 @@ class RestartDoubleVoteTest {
         RaftNode restarted = cluster.restart("n1");
 
         // A different candidate asks for n1's vote, in the SAME term 5.
-        var reqFromC = new RaftRpcClient.RequestVoteRequest(5, "c", 0, 0);
-        var respToC = restarted.handleRequestVote(reqFromC);
+        var reqFromC = envelopeFactory.create("c", "n1", new RequestVoteRequest(5, 0, 0));
+        var respToC = restarted.handleRequestVote(reqFromC).payload();
 
         assertFalse(respToC.voteGranted(),
                 "restarted node granted a second, conflicting vote in a term it already voted in -- "

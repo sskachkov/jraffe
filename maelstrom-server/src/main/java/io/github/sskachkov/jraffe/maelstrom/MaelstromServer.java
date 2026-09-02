@@ -3,14 +3,17 @@ package io.github.sskachkov.jraffe.maelstrom;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import io.github.sskachkov.jraffe.core.RaftNode;
+import io.github.sskachkov.jraffe.core.node.RaftNode;
+import io.github.sskachkov.jraffe.core.node.impl.RaftNodeImpl;
 import io.github.sskachkov.jraffe.core.StateMachine;
 import io.github.sskachkov.jraffe.core.error.NotLeaderError;
 import io.github.sskachkov.jraffe.core.error.RaftError;
 import io.github.sskachkov.jraffe.core.error.TimeoutError;
 import io.github.sskachkov.jraffe.core.message.RaftMessage;
+import io.github.sskachkov.jraffe.core.rpc.AppendEntriesRequest;
 import io.github.sskachkov.jraffe.core.rpc.LogEntry;
-import io.github.sskachkov.jraffe.core.rpc.RaftRpcClient;
+import io.github.sskachkov.jraffe.core.rpc.RequestVoteRequest;
+import io.github.sskachkov.jraffe.core.rpc.RpcEnvelope;
 import io.github.sskachkov.jraffe.kvstore.CVASCommandCodec;
 import io.github.sskachkov.jraffe.kvstore.CVASRequest;
 import io.github.sskachkov.jraffe.kvstore.CVASResponse;
@@ -90,7 +93,7 @@ public class MaelstromServer {
         MaelstromRaftRpcClient rpcClient = new MaelstromRaftRpcClient(transport, mapper);
         MeterRegistry registry = new SimpleMeterRegistry();
         StateMachine stateMachine = new KvStoreStateMachine(new KVStoreImpl());
-        this.raftNode = new RaftNode(nodeId, peerIds, rpcClient, stateMachine, registry);
+        this.raftNode = new RaftNodeImpl(nodeId, peerIds, rpcClient, stateMachine, registry);
         this.raftNode.start();
 
         transport.onMessage("read", this::handleRead);
@@ -272,15 +275,17 @@ public class MaelstromServer {
     // directly on the stdin-reading thread, unlike the client ops above.
 
     private void handleRequestVote(String src, JsonNode body) {
-        var req = new RaftRpcClient.RequestVoteRequest(
+        var req = new RequestVoteRequest(
                 body.get("term").asLong(),
-                body.get("candidate_id").asText(),
                 body.get("last_log_index").asLong(),
                 body.get("last_log_term").asLong());
-        var resp = raftNode.handleRequestVote(req);
+        RpcEnvelope<RequestVoteRequest> reqEnv = envelopeFromBody(body, req);
+        var respEnv = raftNode.handleRequestVote(reqEnv);
+        var resp = respEnv.payload();
 
         ObjectNode reply = mapper.createObjectNode();
         reply.put("type", "request_vote_res");
+        putEnvelope(reply, respEnv);
         reply.put("term", resp.term());
         reply.put("vote_granted", resp.voteGranted());
         transport.reply(src, body.get("msg_id").asLong(), reply);
@@ -296,25 +301,47 @@ public class MaelstromServer {
                     entryNode.get("noop").asBoolean());
             entries.add(logEntry);
         }
-        var req = new RaftRpcClient.AppendEntriesRequest(
-                body.get("req_id").asLong(),
+        var req = new AppendEntriesRequest(
                 body.get("term").asLong(),
-                body.get("leader_id").asText(),
                 body.get("prev_log_index").asLong(),
                 body.get("prev_log_term").asLong(),
                 entries,
                 body.get("leader_commit").asLong());
-        var resp = raftNode.handleAppendEntries(req);
+        RpcEnvelope<AppendEntriesRequest> reqEnv = envelopeFromBody(body, req);
+        var respEnv = raftNode.handleAppendEntries(reqEnv);
+        var resp = respEnv.payload();
 
         ObjectNode reply = mapper.createObjectNode();
         reply.put("type", "append_entries_res");
-        reply.put("req_id", resp.reqId());
+        putEnvelope(reply, respEnv);
         reply.put("term", resp.term());
         reply.put("success", resp.success());
         transport.reply(src, body.get("msg_id").asLong(), reply);
     }
 
     // --- helpers -----------------------------------------------------------------------------
+
+    // Envelope metadata (sender/recipient/sentAt/requestId/correlationId) is read straight off
+    // the wire body - it must be the sending peer's own values (see MaelstromRaftRpcClient),
+    // never fabricated here, or correlationId-based staleness checks in RaftNodeReplicator
+    // silently break.
+    private static <T> RpcEnvelope<T> envelopeFromBody(JsonNode body, T payload) {
+        return new RpcEnvelope<>(
+                body.get("sender").asText(),
+                body.get("recipient").asText(),
+                body.get("sent_at").asLong(),
+                body.get("request_id").asLong(),
+                body.get("correlation_id").asLong(),
+                payload);
+    }
+
+    private static void putEnvelope(ObjectNode body, RpcEnvelope<?> envelope) {
+        body.put("sender", envelope.sender());
+        body.put("recipient", envelope.recipient());
+        body.put("sent_at", envelope.sentAt());
+        body.put("request_id", envelope.requestId());
+        body.put("correlation_id", envelope.correlationId());
+    }
 
     private void replyError(String src, long msgId, int code, String text) {
         ObjectNode reply = mapper.createObjectNode();

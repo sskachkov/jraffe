@@ -3,13 +3,26 @@ option java_package = "io.github.sskachkov.jraffe.server.grpc.proto";
 option java_outer_classname = "RaftProto";
 
 service RaftService {
-  rpc RequestVote (RequestVoteRequest) returns (RequestVoteResponse);
-  rpc AppendEntries (AppendEntriesRequest) returns (AppendEntriesResponse);
+  rpc RequestVote (RpcEnvelope) returns (RpcEnvelope);
+  rpc AppendEntries (RpcEnvelope) returns (RpcEnvelope);
+}
+
+message RpcEnvelope {
+  string sender = 1;
+  string recipient = 2;
+  int64 sentAt = 3;
+  int64 requestId = 4;
+  int64 correlationId = 5;
+  oneof payload {
+    RequestVoteRequest request_vote_request = 6;
+    RequestVoteResponse request_vote_response = 7;
+    AppendEntriesRequest append_entries_request = 8;
+    AppendEntriesResponse append_entries_response = 9;
+  }
 }
 
 message RequestVoteRequest {
   int64 term = 1;
-  string candidate_id = 2;
   int64 last_log_index = 3;
   int64 last_log_term = 4;
 }
@@ -26,16 +39,13 @@ message LogEntry {
 }
 
 message AppendEntriesRequest {
-  int64 reqId = 1;
-  int64 term = 2;
-  string leader_id = 3;
-  int64 prev_log_index = 4;
-  int64 prev_log_term = 5;
-  repeated LogEntry entries = 6;
-  int64 leader_commit = 7;
+  int64 term = 1;
+  int64 prev_log_index = 2;
+  int64 prev_log_term = 3;
+  repeated LogEntry entries = 4;
+  int64 leader_commit = 5;
 }
 message AppendEntriesResponse {
-  int64 reqId = 1;
-  int64 term = 2;
-  bool success = 3;
+  int64 term = 1;
+  bool success = 2;
 }

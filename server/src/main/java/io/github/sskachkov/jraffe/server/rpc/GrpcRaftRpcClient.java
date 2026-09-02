@@ -2,9 +2,7 @@ package io.github.sskachkov.jraffe.server.rpc;
 
 import com.google.protobuf.ByteString;
 import io.github.sskachkov.jraffe.core.logging.ContextAwareLogger;
-import io.github.sskachkov.jraffe.core.rpc.LogEntry;
-import io.github.sskachkov.jraffe.core.rpc.RaftRpcClient;
-import io.github.sskachkov.jraffe.core.rpc.RaftRpcException;
+import io.github.sskachkov.jraffe.core.rpc.*;
 import io.github.sskachkov.jraffe.server.HostPort;
 import io.github.sskachkov.jraffe.server.grpc.proto.RaftProto;
 import io.github.sskachkov.jraffe.server.grpc.proto.RaftServiceGrpc;
@@ -58,42 +56,71 @@ public class GrpcRaftRpcClient implements RaftRpcClient {
     }
 
     @Override
-    public RequestVoteResponse requestVote(String peerId, RequestVoteRequest request) throws RaftRpcException {
+    public RpcEnvelope<RequestVoteResponse> requestVote(RpcEnvelope<RequestVoteRequest> reqEnv) throws RaftRpcException {
         Timer.Sample start = Timer.start(this.registry);
         try {
             // network call happens here
-            var grpcResp = stubs.get(peerId).withDeadlineAfter(VOTE_TIMEOUT, TimeUnit.MILLISECONDS).requestVote(toGrpc(request));
+            var grpcResp = stubs.get(reqEnv.recipient()).withDeadlineAfter(VOTE_TIMEOUT, TimeUnit.MILLISECONDS).requestVote(toGrpc(reqEnv));
             return fromGrpc(grpcResp);
         } catch (StatusRuntimeException sre) {
-            log.trace("StatusRuntimeException", sre);
-            throw new RaftRpcException("requestVote to " + peerId + " failed", sre);
+            log.debug("StatusRuntimeException", sre);
+            throw new RaftRpcException("requestVote to " + reqEnv.recipient() + " failed", sre);
         } finally {
             start.stop(requestVoteTimer);
         }
     }
 
     @Override
-    public AppendEntriesResponse appendEntries(String peerId, AppendEntriesRequest request) throws RaftRpcException {
+    public RpcEnvelope<AppendEntriesResponse> appendEntries(RpcEnvelope<AppendEntriesRequest> reqEnv) throws RaftRpcException {
         Timer.Sample start = Timer.start(this.registry);
         try {
             // network call happens here
-            var grpcResp = stubs.get(peerId).withDeadlineAfter(APPEND_TIMEOUT, TimeUnit.MILLISECONDS).appendEntries(toGrpc(request));
+            var grpcResp = stubs.get(reqEnv.recipient()).withDeadlineAfter(APPEND_TIMEOUT, TimeUnit.MILLISECONDS).appendEntries(toGrpc(reqEnv));
             return fromGrpc(grpcResp);
         } catch (StatusRuntimeException sre) {
-            log.trace("StatusRuntimeException", sre);
-            throw new RaftRpcException("appendEntries to " + peerId + " failed", sre);
+            log.debug("StatusRuntimeException", sre);
+            throw new RaftRpcException("appendEntries to " + reqEnv.recipient() + " failed", sre);
         } finally {
             start.stop(appendEntriesTimer);
         }
     }
 
+    RaftProto.RpcEnvelope toGrpc(RpcEnvelope envelope) {
+        Object req = envelope.payload();
+        RaftProto.RpcEnvelope.Builder envBuilder = RaftProto.RpcEnvelope.newBuilder();
+        envBuilder.setRecipient(envelope.recipient())
+                .setSender(envelope.sender())
+                .setRequestId(envelope.requestId())
+                .setCorrelationId(envelope.correlationId())
+                .setSentAt(envelope.sentAt());
+        switch (req) {
+            case RequestVoteRequest r -> {
+                RaftProto.RequestVoteRequest voteReq = toGrpc(r);
+                envBuilder.setRequestVoteRequest(voteReq);
+            }
+            case AppendEntriesRequest r -> {
+                RaftProto.AppendEntriesRequest appendReq = toGrpc(r);
+                envBuilder.setAppendEntriesRequest(appendReq);
+            }
+            default -> throw new IllegalStateException("Unexpected value: " + req);
+        }
+        return envBuilder.build();
+    }
     private static RaftProto.RequestVoteRequest toGrpc(RequestVoteRequest request) {
         return RaftProto.RequestVoteRequest.newBuilder()
                 .setTerm(request.term())
-                .setCandidateId(request.candidateId())
                 .setLastLogIndex(request.lastLogIndex())
                 .setLastLogTerm(request.lastLogTerm())
                 .build();
+    }
+
+    static RpcEnvelope fromGrpc(RaftProto.RpcEnvelope envelope) {
+        Object payload = switch (envelope.getPayloadCase()) {
+            case REQUEST_VOTE_RESPONSE -> fromGrpc(envelope.getRequestVoteResponse());
+            case APPEND_ENTRIES_RESPONSE -> fromGrpc(envelope.getAppendEntriesResponse());
+            default -> throw new IllegalStateException("Unexpected payload case: " + envelope.getPayloadCase());
+        };
+        return new RpcEnvelope<>(envelope.getSender(), envelope.getRecipient(), envelope.getSentAt(), envelope.getRequestId(), envelope.getCorrelationId(), payload);
     }
 
     private static RequestVoteResponse fromGrpc(RaftProto.RequestVoteResponse grpcResponse) {
@@ -102,9 +129,7 @@ public class GrpcRaftRpcClient implements RaftRpcClient {
 
     private static RaftProto.AppendEntriesRequest toGrpc(AppendEntriesRequest request) {
         var builder = RaftProto.AppendEntriesRequest.newBuilder()
-                .setReqId(request.reqId())
                 .setTerm(request.term())
-                .setLeaderId(request.leaderId())
                 .setPrevLogIndex(request.prevLogIndex())
                 .setPrevLogTerm(request.prevLogTerm())
                 .setLeaderCommit(request.leaderCommit());
@@ -124,6 +149,6 @@ public class GrpcRaftRpcClient implements RaftRpcClient {
     }
 
     private static AppendEntriesResponse fromGrpc(RaftProto.AppendEntriesResponse grpcResponse) {
-        return new AppendEntriesResponse(grpcResponse.getReqId(), grpcResponse.getTerm(), grpcResponse.getSuccess());
+        return new AppendEntriesResponse(grpcResponse.getTerm(), grpcResponse.getSuccess());
     }
 }

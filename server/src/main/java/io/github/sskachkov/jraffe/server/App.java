@@ -1,5 +1,14 @@
 package io.github.sskachkov.jraffe.server;
 
+import io.github.sskachkov.jraffe.core.StateMachine;
+import io.github.sskachkov.jraffe.core.node.RaftNode;
+import io.github.sskachkov.jraffe.core.node.impl.RaftNodeImpl;
+import io.github.sskachkov.jraffe.kvstore.KVStoreImpl;
+import io.github.sskachkov.jraffe.server.rpc.GrpcRaftRpcClient;
+import io.github.sskachkov.jraffe.server.statemachine.KvStoreStateMachine;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -13,7 +22,14 @@ public class App {
         Map<String, HostPort> peers = parsePeers(System.getenv("PEERS"));
         peers.remove(nodeId);
 
-        RaftServer server = new RaftServer(nodeId, new HostPort("localhost", port), clientPort, peers);
+        MeterRegistry registry = new SimpleMeterRegistry();
+
+        GrpcRaftRpcClient client = new GrpcRaftRpcClient(peers, nodeId, registry);
+        StateMachine stateMachine = new KvStoreStateMachine(new KVStoreImpl());
+
+        RaftNode node = new RaftNodeImpl(nodeId, peers.keySet().stream().toList(), client, stateMachine, registry);
+
+        RaftServer server = new RaftServer(node, new HostPort("localhost", port), clientPort, peers, registry);
         server.start();
 
         CountDownLatch shutdownLatch = new CountDownLatch(1);

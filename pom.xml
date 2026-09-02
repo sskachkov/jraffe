@@ -94,6 +94,7 @@
           <configuration>
             <failIfNoTests>false</failIfNoTests>
             <argLine>--add-opens java.base/java.util.concurrent=ALL-UNNAMED</argLine>
+            <redirectTestOutputToFile>true</redirectTestOutputToFile>
           </configuration>
         </plugin>
       </plugins>

@@ -1,5 +1,7 @@
-package io.github.sskachkov.jraffe.core;
+package io.github.sskachkov.jraffe.core.node.impl;
 
+import io.github.sskachkov.jraffe.core.node.RaftNode;
+import io.github.sskachkov.jraffe.core.node.Role;
 import io.github.sskachkov.jraffe.core.rpc.LogEntry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,19 +28,20 @@ public class ReplicationTest {
 
     @AfterEach
     void tearDown() {
-        nodes.forEach(RaftNode::shutdown);
+        nodes.forEach(RaftNode::stop);
     }
+
     @Test
     void basicReplication() throws InterruptedException {
-        RaftNode leader = RaftTestUtils.awaitLeader(nodes, Duration.ofSeconds(15)).orElseThrow(() -> new AssertionError("no leader elected within timeout"));
+        RaftNodeImpl leader = (RaftNodeImpl) RaftTestUtils.awaitLeader(nodes, Duration.ofSeconds(15)).orElseThrow(() -> new AssertionError("no leader elected within timeout"));
         byte [] command1 = "command1".getBytes();
-        RaftNode.TermIndex termIndex = leader.submit0(command1);
-        long index = termIndex.index();
+        RaftNodeImpl.IndexTerm indexTerm = leader.submit0(command1);
+        long index = indexTerm.index();
         LogEntry leadersEntry = leader.getEntryAt0(index).get();
 
         boolean logEntryReplicated = RaftTestUtils.awaitCondition(Duration.ofSeconds(5), () -> {
             for (RaftNode node : nodes) {
-                Optional<LogEntry> oentry = node.getEntryAt0(index);
+                Optional<LogEntry> oentry = ((RaftNodeImpl)node).getEntryAt0(index);
                 if (oentry.isEmpty()) {
                     return false;
                 }
@@ -66,21 +69,21 @@ public class ReplicationTest {
 
     @Test
     void multipleEntriesReplicateInOrder() throws InterruptedException {
-        RaftNode leader = RaftTestUtils.awaitLeader(nodes, Duration.ofSeconds(15))
+        RaftNodeImpl leader = (RaftNodeImpl) RaftTestUtils.awaitLeader(nodes, Duration.ofSeconds(15))
                 .orElseThrow(() -> new AssertionError("no leader elected within timeout"));
 
         List<LogEntry> leadersEntries = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
             byte[] command = ("command" + i).getBytes();
-            RaftNode.TermIndex termIndex = leader.submit0(command);
-            leadersEntries.add(leader.getEntryAt0(termIndex.index()).get());
+            RaftNodeImpl.IndexTerm indexTerm = leader.submit0(command);
+            leadersEntries.add(leader.getEntryAt0(indexTerm.index()).get());
         }
         long lastIndex = leadersEntries.get(leadersEntries.size() - 1).index();
 
         boolean allReplicatedInOrder = RaftTestUtils.awaitCondition(Duration.ofSeconds(5), () -> {
             for (RaftNode node : nodes) {
                 for (LogEntry expected : leadersEntries) {
-                    Optional<LogEntry> oentry = node.getEntryAt0(expected.index());
+                    Optional<LogEntry> oentry = ((RaftNodeImpl)node).getEntryAt0(expected.index());
                     if (oentry.isEmpty()) {
                         return false;
                     }
@@ -107,24 +110,24 @@ public class ReplicationTest {
 
     @Test
     void isolatedFollowerCatchesUpAfterHealing() throws InterruptedException {
-        RaftNode leader = RaftTestUtils.awaitLeader(nodes, Duration.ofSeconds(15))
+        RaftNodeImpl leader = (RaftNodeImpl) RaftTestUtils.awaitLeader(nodes, Duration.ofSeconds(15))
                 .orElseThrow(() -> new AssertionError("no leader elected within timeout"));
 
-        RaftNode isolatedFollower = nodes.stream()
+        RaftNodeImpl isolatedFollower = (RaftNodeImpl) nodes.stream()
                 .filter(n -> n.getRole() != Role.LEADER)
                 .findAny()
                 .orElseThrow(() -> new AssertionError("no follower to isolate"));
-        cluster.isolate(isolatedFollower.getNodeId());
+        cluster.isolate(isolatedFollower.getId());
 
         List<RaftNode> connectedNodes = nodes.stream()
-                .filter(n -> !n.getNodeId().equals(isolatedFollower.getNodeId()))
+                .filter(n -> !n.getId().equals(isolatedFollower.getId()))
                 .toList();
 
         List<LogEntry> leadersEntries = new ArrayList<>();
         for (int i = 0; i < 5; i++) {
             byte[] command = ("command" + i).getBytes();
-            RaftNode.TermIndex termIndex = leader.submit0(command);
-            leadersEntries.add(leader.getEntryAt0(termIndex.index()).get());
+            RaftNodeImpl.IndexTerm indexTerm = leader.submit0(command);
+            leadersEntries.add(leader.getEntryAt0(indexTerm.index()).get());
         }
         long lastIndex = leadersEntries.get(leadersEntries.size() - 1).index();
 
@@ -139,7 +142,7 @@ public class ReplicationTest {
         assertTrue(committedWithoutIsolatedFollower,
                 "Entries did not commit on the connected majority while a follower was isolated.");
 
-        cluster.heal(isolatedFollower.getNodeId());
+        cluster.heal(isolatedFollower.getId());
 
         // generous timeout: while isolated, this node's own election timer keeps firing with
         // nobody to grant it a vote, so its term can climb well past the real leader's. Healing

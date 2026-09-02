@@ -1,7 +1,8 @@
-package io.github.sskachkov.jraffe.core;
+package io.github.sskachkov.jraffe.core.node.impl;
 
 import io.github.sskachkov.jraffe.core.message.RaftMessage;
 import io.github.sskachkov.jraffe.core.message.RaftResponse;
+import io.github.sskachkov.jraffe.core.node.RaftNode;
 import io.github.sskachkov.jraffe.kvstore.*;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,8 +23,8 @@ public class ClientSubmissionTest {
     private List<RaftNode> nodes;
 
     private static <REQ, RESP> CompletableFuture<RESP> send(RaftNode node, REQ request, boolean readOnly,
-                                             Function<REQ, byte[]> encoder,
-                                             Function<byte[], RESP> decoder) throws InterruptedException {
+                                                            Function<REQ, byte[]> encoder,
+                                                            Function<byte[], RESP> decoder) {
         byte[] bytes = encoder.apply(request);
         CompletableFuture<RaftResponse> future;
         if (readOnly) {
@@ -60,7 +61,7 @@ public class ClientSubmissionTest {
 
     @AfterEach
     void tearDown() {
-        nodes.forEach(RaftNode::shutdown);
+        nodes.forEach(RaftNode::stop);
     }
 
     @Test
@@ -145,7 +146,7 @@ public class ClientSubmissionTest {
     public void testSetApplyOnIsolation() throws InterruptedException, ExecutionException {
         RaftNode leader = RaftTestUtils.awaitLeader(nodes, Duration.ofSeconds(15))
                 .orElseThrow(() -> new AssertionError("no leader elected within timeout"));
-        String leaderId = leader.getNodeId();
+        String leaderId = leader.getId();
         TestStateMachineAdapter leaderStateMachine = this.cluster.stateMachineFor(leaderId);
         Iterator<String> pidsIterator = leader.getPeerIds().iterator();
         String peerId1 = pidsIterator.next();
@@ -199,7 +200,11 @@ public class ClientSubmissionTest {
 
         CompletableFuture<GetResponse> future = sendGetRequest(leader, key.getBytes());
         Thread.sleep(400);
-        assertFalse(future.isDone(), "read completed without majority confirmation");
+        if (future.isDone()) {
+            fail(future.isCompletedExceptionally()
+                    ? "read resolved early via failure: " + future.handle((v, ex) -> ex).join()
+                    : "read resolved early via SUCCESS with value: " + future.getNow(null));
+        }
 
         for (String peerId : leader.getPeerIds()) {
             cluster.heal(peerId);

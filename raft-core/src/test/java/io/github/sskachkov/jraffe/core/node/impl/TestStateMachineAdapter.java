@@ -1,5 +1,6 @@
-package io.github.sskachkov.jraffe.core;
+package io.github.sskachkov.jraffe.core.node.impl;
 
+import io.github.sskachkov.jraffe.core.StateMachine;
 import io.github.sskachkov.jraffe.kvstore.KVStore;
 import io.github.sskachkov.jraffe.kvstore.KVStoreImpl;
 

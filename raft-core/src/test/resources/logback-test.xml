@@ -5,7 +5,7 @@
         </encoder>
     </appender>
 
-    <logger name="io.github.sskachkov.jraffe" level="INFO"/>
+    <logger name="io.github.sskachkov.jraffe" level="DEBUG"/>
     <root level="INFO">
         <appender-ref ref="STDOUT"/>
     </root>

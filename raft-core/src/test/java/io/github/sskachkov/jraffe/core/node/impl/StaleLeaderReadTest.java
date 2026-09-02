@@ -1,9 +1,11 @@
-package io.github.sskachkov.jraffe.core;
+package io.github.sskachkov.jraffe.core.node.impl;
 
 import io.github.sskachkov.jraffe.core.message.RaftMessage;
 import io.github.sskachkov.jraffe.core.message.RaftResponse;
+import io.github.sskachkov.jraffe.core.node.RaftNode;
+import io.github.sskachkov.jraffe.core.rpc.AppendEntriesRequest;
+import io.github.sskachkov.jraffe.core.rpc.EnvelopeFactory;
 import io.github.sskachkov.jraffe.core.rpc.LogEntry;
-import io.github.sskachkov.jraffe.core.rpc.RaftRpcClient;
 import io.github.sskachkov.jraffe.kvstore.GetCommandCodec;
 import io.github.sskachkov.jraffe.kvstore.GetRequest;
 import io.github.sskachkov.jraffe.kvstore.GetResponse;
@@ -23,17 +25,19 @@ class StaleLeaderReadTest {
     private static final List<String> NODE_IDS = List.of("n1", "n2", "n3");
     private InMemoryCluster cluster;
     private List<RaftNode> nodes;
+    private EnvelopeFactory envelopeFactory;
 
     @BeforeEach
     void setUp() {
         cluster = new InMemoryCluster();
         nodes = cluster.start(NODE_IDS);
         cluster.isolate("n1"); // exists only as a phantom peer, never actually reachable
+        envelopeFactory = new EnvelopeFactory();
     }
 
     @AfterEach
     void tearDown() {
-        nodes.forEach(RaftNode::shutdown);
+        nodes.forEach(RaftNode::stop);
     }
 
     @Test
@@ -46,9 +50,9 @@ class StaleLeaderReadTest {
         // updated leaderCommit arrived) before that leader disappeared.
         byte[] setCmd = SetCommandCodec.encodeRequest(new SetRequest("k".getBytes(), "v".getBytes()));
         LogEntry entry = new LogEntry(1, 1, setCmd, false);
-        var req = new RaftRpcClient.AppendEntriesRequest(1, 1, "ghost-leader", 0, 0, List.of(entry), /*leaderCommit=*/0);
-        n2.handleAppendEntries(req);
-        n3.handleAppendEntries(req);
+        var req = new AppendEntriesRequest(1, 0, 0, List.of(entry), /*leaderCommit=*/0);
+        n2.handleAppendEntries(envelopeFactory.create("ghost-leader","n2", req));
+        n3.handleAppendEntries(envelopeFactory.create("ghost-leader","n3", req));
 
         RaftNode newLeader = RaftTestUtils.awaitLeader(List.of(n2, n3), Duration.ofSeconds(15))
                 .orElseThrow(() -> new AssertionError("no leader elected"));

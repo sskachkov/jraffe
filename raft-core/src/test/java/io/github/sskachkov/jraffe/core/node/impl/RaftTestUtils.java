@@ -1,4 +1,7 @@
-package io.github.sskachkov.jraffe.core;
+package io.github.sskachkov.jraffe.core.node.impl;
+
+import io.github.sskachkov.jraffe.core.node.RaftNode;
+import io.github.sskachkov.jraffe.core.node.Role;
 
 import java.time.Duration;
 import java.time.Instant;
